@@ -16,8 +16,11 @@ import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.InternalComposeApi
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.currentComposer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -81,9 +84,35 @@ public final class EnvironmentValues {
             element
         }.toTypedArray()
         lastSetValues.clear()
+
         CompositionLocalProvider(*provided) {
             content()
         }
+    }
+
+    /// Set environment values during a composition that returns a value.
+    ///
+    /// - Seealso: ``setValues(_:in:)``
+    // SKIP INSERT: @OptIn(InternalComposeApi::class)
+    @Composable func setValuesWithReturn<R>(_ execute: @Composable (EnvironmentValues) -> ComposeResult, in content: @Composable () -> R) -> R {
+        // Set the values in EnvironmentValues to keep any user-defined setter logic in place, then retrieve and clear the last set values
+        execute(self)
+        for action in lastSetActions {
+            action()
+        }
+        lastSetActions.clear()
+        let provided = lastSetValues.map { entry in
+            // SKIP INSERT: val element = entry.key provides entry.value
+            element
+        }.toTypedArray()
+        lastSetValues.clear()
+
+        // Note: this is an adaptation of the standard `CompositionLocalProvider(*provided)` function modified to return a value.
+        // This uses internal API
+        currentComposer.startProviders(provided)
+        let ret = content()
+        currentComposer.endProviders()
+        return ret
     }
 
     // On set we populate our `lastSetValues` map, which our `setValues` function reads from and then clears after
@@ -159,12 +188,7 @@ extension View {
     // Must be public to allow access from our inline `environment` function.
     public func environmentObject(type: Any.Type, object: Any?) -> any View {
         #if SKIP
-        return ComposeModifierView(contentView: self) { view, context in
-            let compositionLocal = EnvironmentValues.shared.objectCompositionLocal(type: type)
-            let value = object ?? Unit
-            // SKIP INSERT: val provided = compositionLocal provides value
-            CompositionLocalProvider(provided) { view.Compose(context: context) }
-        }
+        return ModifiedContent(content: self, modifier: EnvironmentObjectModifier(type: type, value: object))
         #else
         return self
         #endif
@@ -173,14 +197,18 @@ extension View {
     // We rely on the transpiler to turn the `WriteableKeyPath` provided in code into a `setValue` closure
     public func environment<V>(_ setValue: (V) -> Void, _ value: V) -> any View {
         #if SKIP
-        return ComposeModifierView(contentView: self) { view, context in
-            EnvironmentValues.shared.setValues {
-                _ in setValue(value)
-                return ComposeResult.ok
-            } in: {
-                view.Compose(context: context)
-            }
-        }
+        return environment(setValue, value, affectsEvaluate: true)
+        #else
+        return self
+        #endif
+    }
+
+    public func environment<V>(_ setValue: (V) -> Void, _ value: V, affectsEvaluate: Bool) -> any View {
+        #if SKIP
+        return ModifiedContent(content: self, modifier: EnvironmentModifier(affectsEvaluate: affectsEvaluate) { _ in
+            setValue(value)
+            return ComposeResult.ok
+        })
         #else
         return self
         #endif
@@ -189,14 +217,10 @@ extension View {
     // SKIP @bridge
     public func environment(bridgedKey: String, value: EnvironmentSupport?) -> any View {
         #if SKIP
-        return ComposeModifierView(contentView: self) { view, context in
-            EnvironmentValues.shared.setValues {
-                $0.setBridged(key: bridgedKey, value: value)
-                return ComposeResult.ok
-            } in: {
-                view.Compose(context: context)
-            }
-        }
+        return ModifiedContent(content: self, modifier: EnvironmentModifier { environment in
+            environment.setBridged(key: bridgedKey, value: value)
+            return ComposeResult.ok
+        })
         #else
         return self
         #endif
@@ -204,6 +228,42 @@ extension View {
 }
 
 #if SKIP
+
+final class EnvironmentObjectModifier: ModifierProtocol {
+    let type: Any.Type
+    let value: Any?
+
+    init(type: Any.Type, value: Any?) {
+        self.type = type
+        self.value = value
+    }
+
+    override var role: ModifierRole {
+        return .unspecified
+    }
+
+    /// - Seealso: `EnvironmentValues.setValuesWithReturn`
+    // SKIP INSERT: @OptIn(InternalComposeApi::class)
+    @Composable override func Evaluate(content: View, context: ComposeContext, options: Int) -> kotlin.collections.List<Renderable>? {
+        let compositionLocal = EnvironmentValues.shared.objectCompositionLocal(type: type)
+        let value = value ?? Unit
+        // SKIP INSERT: val provided = compositionLocal provides value
+        currentComposer.startProviders(listOf(provided).toTypedArray())
+        let renderables = ModifiedContent.Evaluate(content: content, context: context, options: options)
+        currentComposer.endProviders()
+        if renderables.size == 1 && renderables[0] === content {
+            return nil
+        }
+        return renderables.map { ModifiedContent(content: $0, modifier: self) }
+    }
+
+    @Composable override func Render(content: Renderable, context: ComposeContext) {
+        let compositionLocal = EnvironmentValues.shared.objectCompositionLocal(type: type)
+        let value = value ?? Unit
+        // SKIP INSERT: val provided = compositionLocal provides value
+        CompositionLocalProvider(provided) { content.Render(context: context) }
+    }
+}
 
 // The transpiler translates the `EnvironmentValues` extension vars we add (or when apps add their own) from a
 // get/set var into a get-only @Composable var and a setter function. @Composable vars cannot have setters
@@ -360,7 +420,7 @@ extension EnvironmentValues {
     }
 
     public var isSearching: Bool {
-        return _searchableState?.isSearching.value == true
+        return _isSearching?.value == true
     }
 
     public var layoutDirection: LayoutDirection {
@@ -549,24 +609,24 @@ extension EnvironmentValues {
         set { setBuiltinValue(key: "_contentPadding", value: newValue, defaultValue: { EdgeInsets() }) }
     }
 
-    var _fillHeight: (@Composable () -> Modifier)? {
-        get { builtinValue(key: "_fillHeight", defaultValue: { nil }) as! (@Composable () -> Modifier)? }
-        set { setBuiltinValue(key: "_fillHeight", value: newValue, defaultValue: { nil }) }
+    var _flexibleHeight: (@Composable (Float?, Float?, Float?) -> Modifier)? {
+        get { builtinValue(key: "_flexibleHeight", defaultValue: { nil }) as! (@Composable (Float?, Float?, Float?) -> Modifier)? }
+        set { setBuiltinValue(key: "_flexibleHeight", value: newValue, defaultValue: { nil }) }
     }
 
-    var _fillWidth: (@Composable () -> Modifier)? {
-        get { builtinValue(key: "_fillWidth", defaultValue: { nil }) as! (@Composable () -> Modifier)? }
-        set { setBuiltinValue(key: "_fillWidth", value: newValue, defaultValue: { nil }) }
+    var _flexibleWidth: (@Composable (Float?, Float?, Float?) -> Modifier)? {
+        get { builtinValue(key: "_flexibleWidth", defaultValue: { nil }) as! (@Composable (Float?, Float?, Float?) -> Modifier)? }
+        set { setBuiltinValue(key: "_flexibleWidth", value: newValue, defaultValue: { nil }) }
     }
 
-    var _fillHeightModifier: Modifier? {
-        get { builtinValue(key: "_fillHeightModifier", defaultValue: { nil }) as! Modifier? }
-        set { setBuiltinValue(key: "_fillHeightModifier", value: newValue, defaultValue: { nil }) }
+    var _flexibleHeightModifier: ((Float?, Float?, Float?) -> Modifier)? {
+        get { builtinValue(key: "_flexibleHeightModifier", defaultValue: { nil }) as! ((Float?, Float?, Float?) -> Modifier)? }
+        set { setBuiltinValue(key: "_flexibleHeightModifier", value: newValue, defaultValue: { nil }) }
     }
 
-    var _fillWidthModifier: Modifier? {
-        get { builtinValue(key: "_fillWidthModifier", defaultValue: { nil }) as! Modifier? }
-        set { setBuiltinValue(key: "_fillWidthModifier", value: newValue, defaultValue: { nil }) }
+    var _flexibleWidthModifier: ((Float?, Float?, Float?) -> Modifier)? {
+        get { builtinValue(key: "_flexibleWidthModifier", defaultValue: { nil }) as! ((Float?, Float?, Float?) -> Modifier)? }
+        set { setBuiltinValue(key: "_flexibleWidthModifier", value: newValue, defaultValue: { nil }) }
     }
 
     var _foregroundStyle: ShapeStyle? {
@@ -578,6 +638,16 @@ extension EnvironmentValues {
     var _isEdgeToEdge: Bool? {
         get { builtinValue(key: "_isEdgeToEdge", defaultValue: { nil }) as! Bool? }
         set { setBuiltinValue(key: "_isEdgeToEdge", value: newValue, defaultValue: { nil }) }
+    }
+
+    var _isNavigationRoot: Bool? {
+        get { builtinValue(key: "_isNavigationRoot", defaultValue: { nil }) as! Bool? }
+        set { setBuiltinValue(key: "_isNavigationRoot", value: newValue, defaultValue: { nil }) }
+    }
+
+    var _isSearching: MutableState<Bool>? {
+        get { builtinValue(key: "_isSearching", defaultValue: { nil }) as! MutableState<Bool>? }
+        set { setBuiltinValue(key: "_isSearching", value: newValue, defaultValue: { nil }) }
     }
 
     var _keyboardOptions: KeyboardOptions? {
@@ -609,7 +679,13 @@ extension EnvironmentValues {
         set { setBuiltinValue(key: "_layoutScrollAxes", value: newValue, defaultValue: { Axis.Set(rawValue: 0) }) }
     }
 
-    public var _lineLimitReservesSpace: Bool? {
+    /// Allow users to revert to previous layout behavior.
+    var _layoutImplementationVersion: Int {
+        get { builtinValue(key: "_layoutImplementationVersion", defaultValue: { 1 }) as! Int }
+        set { setBuiltinValue(key: "_layoutImplementationVersion", value: newValue, defaultValue: { 1 }) }
+    }
+
+    var _lineLimitReservesSpace: Bool? {
         get { builtinValue(key: "_lineLimitReservesSpace", defaultValue: { nil }) as! Bool? }
         set { setBuiltinValue(key: "_lineLimitReservesSpace", value: newValue, defaultValue: { nil }) }
     }
@@ -753,7 +829,7 @@ extension EnvironmentValues {
 }
 #endif
 
-#if false
+/*
 import protocol Combine.ObservableObject
 import struct CoreGraphics.CGFloat
 import struct Foundation.Calendar
@@ -2144,6 +2220,5 @@ public protocol EnvironmentalModifier : ViewModifier where Self.Body == Never {
     /// Resolve to a concrete modifier in the given `environment`.
     func resolve(in environment: EnvironmentValues) -> Self.ResolvedModifier
 }
-
-#endif
+*/
 #endif

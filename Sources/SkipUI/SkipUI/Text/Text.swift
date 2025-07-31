@@ -41,7 +41,7 @@ import struct CoreGraphics.CGFloat
 #endif
 
 // SKIP @bridge
-public struct Text: View, Equatable {
+public struct Text: View, Renderable, Equatable {
     private let textView: _Text
     private let modifiedView: any View
 
@@ -100,7 +100,7 @@ public struct Text: View, Equatable {
         return textView.localizedTextString()
     }
 
-    @Composable public override func ComposeContent(context: ComposeContext) {
+    @Composable override func Render(context: ComposeContext) {
         modifiedView.Compose(context: context)
     }
 
@@ -167,9 +167,8 @@ public struct Text: View, Equatable {
         return TextStyleInfo(style: style, color: textColor, isUppercased: isUppercased, isLowercased: isLowercased)
     }
 
-    public override func strippingModifiers<R>(until: (ComposeModifierView) -> Bool = { _ in false }, perform: (any View?) -> R) -> R {
-        let text = modifiedView === textView ? self : Text(textView: textView, modifiedView: textView)
-        return perform(text)
+    public override func strip() -> Renderable {
+        return modifiedView === textView ? self : Text(textView: textView, modifiedView: textView)
     }
     #else
     public var body: some View {
@@ -342,7 +341,7 @@ public struct Text: View, Equatable {
     }
 }
 
-struct _Text: View, Equatable {
+struct _Text: View, Renderable, Equatable {
     let verbatim: String?
     let attributedString: AttributedString?
     let key: LocalizedStringKey?
@@ -385,7 +384,7 @@ struct _Text: View, Equatable {
     }
 
     // SKIP INSERT: @OptIn(ExperimentalTextApi::class)
-    @Composable override func ComposeContent(context: ComposeContext) {
+    @Composable override func Render(context: ComposeContext) {
         let (locfmt, locnode, interpolations) = localizedTextInfo()
         let textEnvironment = EnvironmentValues.shared._textEnvironment
         let textDecoration = textEnvironment.textDecoration
@@ -396,6 +395,7 @@ struct _Text: View, Equatable {
         let redaction = EnvironmentValues.shared.redactionReasons
         let styleInfo = Text.styleInfo(textEnvironment: textEnvironment, redaction: redaction, context: context)
         let animatable = styleInfo.style.asAnimatable(context: context)
+        var modifier = Modifier.flexibleWidth(max: Float.flexibleUnknownNonExpanding).then(context.modifier)
         var options: Material3TextOptions
         if let locnode {
             let layoutResult = remember { mutableStateOf<TextLayoutResult?>(nil) }
@@ -406,7 +406,6 @@ struct _Text: View, Equatable {
             }
             let annotatedText = annotatedString(markdown: locnode, interpolations: interpolations, linkColor: linkColor, isUppercased: styleInfo.isUppercased, isLowercased: styleInfo.isLowercased, isRedacted: isPlaceholder)
             let links = annotatedText.getUrlAnnotations(start: 0, end: annotatedText.length)
-            var modifier = context.modifier
             if !links.isEmpty() {
                 let currentText = rememberUpdatedState(annotatedText)
                 let currentHandler = rememberUpdatedState(EnvironmentValues.shared.openURL)
@@ -432,7 +431,7 @@ struct _Text: View, Equatable {
             } else if styleInfo.isLowercased {
                 text = text.lowercased()
             }
-            options = Material3TextOptions(text: text, modifier: context.modifier, color: styleInfo.color ?? androidx.compose.ui.graphics.Color.Unspecified, maxLines: maxLines, minLines: minLines, style: animatable.value, textDecoration: textDecoration, textAlign: textAlign)
+            options = Material3TextOptions(text: text, modifier: modifier, color: styleInfo.color ?? androidx.compose.ui.graphics.Color.Unspecified, maxLines: maxLines, minLines: minLines, style: animatable.value, textDecoration: textDecoration, textAlign: textAlign)
         }
         if let updateOptions = EnvironmentValues.shared._material3Text {
             options = updateOptions(options)
@@ -559,16 +558,12 @@ struct TextEnvironment: Equatable {
 }
 
 func textEnvironment(for view: View, update: (inout TextEnvironment) -> Void) -> some View {
-    return ComposeModifierView(contentView: view) { view, context in
-        EnvironmentValues.shared.setValues {
-            var textEnvironment = $0._textEnvironment
-            update(&textEnvironment)
-            $0.set_textEnvironment(textEnvironment)
-            return ComposeResult.ok
-        } in: {
-            view.Compose(context: context)
-        }
-    }
+    return ModifiedContent(content: view, modifier: EnvironmentModifier(affectsEvaluate: false) { environment in
+        var textEnvironment = environment._textEnvironment
+        update(&textEnvironment)
+        environment.set_textEnvironment(textEnvironment)
+        return ComposeResult.ok
+    })
 }
 
 struct TextStyleInfo {
@@ -682,7 +677,7 @@ extension View {
     // SKIP @bridge
     public func lineLimit(_ limit: Int, reservesSpace: Bool) -> any View {
         #if SKIP
-        return environment(\.lineLimit, limit).environment(\._lineLimitReservesSpace, reservesSpace)
+        return environment(\.lineLimit, limit).environment(\._lineLimitReservesSpace, reservesSpace, affectsEvaluate: false)
         #else
         return self
         #endif
@@ -838,7 +833,7 @@ extension View {
     #if SKIP
     /// Compose text field customization.
     public func material3Text(_ options: @Composable (Material3TextOptions) -> Material3TextOptions) -> View {
-        return environment(\._material3Text, options)
+        return environment(\._material3Text, options, affectsEvaluate: false)
     }
     #endif
 }
@@ -905,7 +900,7 @@ public struct RedactionReasons : OptionSet {
     public static let invalidated = RedactionReasons(rawValue: 1 << 2)
 }
 
-#if false
+/*
 import struct Foundation.AttributedString
 import struct Foundation.Date
 import struct Foundation.DateInterval
@@ -1424,6 +1419,5 @@ extension AttributeDynamicLookup {
 
     public subscript<T>(dynamicMember keyPath: KeyPath<AttributeScopes.SkipUIAttributes, T>) -> T where T : AttributedStringKey { get { fatalError() } }
 }
-
-#endif
+*/
 #endif
