@@ -374,11 +374,11 @@ public struct NavigationStack : View, Renderable {
                                     onDismissRequest = { isMenuExpanded.value = false }
                                 ) {
                                     let menuContext = context.content()
-                                    let itemViews = titleMenu.collectViews(context: menuContext)
+                                    let itemViews = titleMenu.Evaluate(context: menuContext, options: 0)
                                     let replaceMenu: (Menu?) -> Void = { menu in
                                         isMenuExpanded.value = false
                                     }
-                                    Menu.ComposeDropdownMenuItems(for: itemViews, context: menuContext, replaceMenu: replaceMenu)
+                                    Menu.RenderDropdownMenuItems(for: itemViews, context: menuContext, replaceMenu: replaceMenu)
                                 }
                             }
                         } else {
