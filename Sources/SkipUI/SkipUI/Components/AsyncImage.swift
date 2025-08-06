@@ -84,6 +84,7 @@ public struct AsyncImage : View, Renderable {
                 }
             case .success(let image):
                 if let bridgedContent {
+//                    logger.info("image: \(image)")
                     return bridgedContent(image, nil)
                 } else {
                     return image
@@ -116,11 +117,14 @@ public struct AsyncImage : View, Renderable {
             .memoryCacheKey(urlString)
             .diskCacheKey(urlString)
             .build()
+
         SubcomposeAsyncImage(model: model, contentDescription: nil, loading: { _ in
             content(AsyncImagePhase.empty).Compose(context: context)
         }, success: { state in
             let image = Image(painter: self.painter, scale: scale)
-            content(AsyncImagePhase.success(image)).Compose(context: context)
+            let content = content(AsyncImagePhase.success(image))
+            logger.info("SKIPUI.Renderable.AsyncImage.success: \(content)")
+            content.Compose(context: context)
         }, error: { state in
             content(AsyncImagePhase.failure(ErrorException(cause: state.result.throwable))).Compose(context: context)
         })
