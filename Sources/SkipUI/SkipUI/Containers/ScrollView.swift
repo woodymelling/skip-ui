@@ -55,26 +55,27 @@ public struct ScrollView : View, Renderable {
         let builtinScrollAxisSet = rememberSaveable(stateSaver: context.stateSaver as! Saver<Preference<Axis.Set>, Any>) { mutableStateOf(Preference<Axis.Set>(key: BuiltinScrollAxisSetPreferenceKey.self)) }
         let builtinScrollAxisSetCollector = PreferenceCollector<Axis.Set>(key: BuiltinScrollAxisSetPreferenceKey.self, state: builtinScrollAxisSet)
 
-        let scrollState = rememberScrollState()
+        let verticalScrollState = rememberScrollState()
+        let horizontalScrollState = rememberScrollState()
         let coroutineScope = rememberCoroutineScope()
         let isVerticalScroll = axes.contains(.vertical) && !builtinScrollAxisSet.value.reduced.contains(Axis.Set.vertical)
         let isHorizontalScroll = axes.contains(.horizontal) && !builtinScrollAxisSet.value.reduced.contains(Axis.Set.horizontal)
         var scrollModifier: Modifier = Modifier
         var effectiveScrollAxes: Axis.Set = []
         if isVerticalScroll {
-            scrollModifier = scrollModifier.verticalScroll(scrollState)
+            scrollModifier = scrollModifier.verticalScroll(verticalScrollState)
             effectiveScrollAxes.insert(Axis.Set.vertical)
             if !axes.contains(.horizontal) {
                 // Integrate with our scroll-to-top navigation bar taps
-                PreferenceValues.shared.contribute(context: context, key: ScrollToTopPreferenceKey.self, value: ScrollToTopAction(key: scrollState) {
+                PreferenceValues.shared.contribute(context: context, key: ScrollToTopPreferenceKey.self, value: ScrollToTopAction(key: verticalScrollState) {
                     coroutineScope.launch {
-                        scrollState.animateScrollTo(0)
+                        verticalScrollState.animateScrollTo(0)
                     }
                 })
             }
         }
         if isHorizontalScroll {
-            scrollModifier = scrollModifier.horizontalScroll(scrollState)
+            scrollModifier = scrollModifier.horizontalScroll(horizontalScrollState)
             effectiveScrollAxes.insert(Axis.Set.horizontal)
         }
         let contentContext = context.content()
@@ -84,8 +85,8 @@ public struct ScrollView : View, Renderable {
                 if isVerticalScroll {
                     containerModifier = containerModifier.fillMaxHeight()
                     if safeAreaEdges.contains(Edge.Set.bottom) {
-                        PreferenceValues.shared.contribute(context: context, key: ToolbarPreferenceKey.self, value: ToolbarPreferences(scrollableState: scrollState, for: [ToolbarPlacement.bottomBar]))
-                        PreferenceValues.shared.contribute(context: context, key: TabBarPreferenceKey.self, value: ToolbarBarPreferences(scrollableState: scrollState))
+                        PreferenceValues.shared.contribute(context: context, key: ToolbarPreferenceKey.self, value: ToolbarPreferences(scrollableState: verticalScrollState, for: [ToolbarPlacement.bottomBar]))
+                        PreferenceValues.shared.contribute(context: context, key: TabBarPreferenceKey.self, value: ToolbarBarPreferences(scrollableState: verticalScrollState))
                     }
                 }
                 if isHorizontalScroll {
